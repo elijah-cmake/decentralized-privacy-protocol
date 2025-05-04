@@ -72,3 +72,76 @@
         pool-creator: principal
     }
 )
+
+;; Track participation status by pool and user
+(define-map pool-participant-status 
+    {pool-id: uint, user: principal}
+    bool
+)
+
+;; Public Functions
+
+;; Initialize the contract - can only be called once by contract owner
+(define-public (initialize)
+    (begin
+        (asserts! (not (var-get is-contract-initialized)) ERR-ALREADY-INITIALIZED)
+        (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+        (var-set is-contract-initialized true)
+        (ok true)
+    )
+)
+
+;; Deposit STX into the contract with safety checks
+(define-public (deposit (amount uint))
+    (begin
+        (asserts! (var-get is-contract-initialized) ERR-CONTRACT-NOT-INITIALIZED)
+        (asserts! (not (var-get is-contract-paused)) ERR-NOT-AUTHORIZED)
+        (asserts! (and (> amount u0) (<= amount MAX-TRANSACTION-AMOUNT)) ERR-INVALID-AMOUNT)
+        
+        (let ((current-day (/ stacks-block-height u144))
+              (current-total (default-to u0 
+                (map-get? daily-tx-totals {user: tx-sender, day: current-day}))))
+            (asserts! (<= (+ current-total amount) MAX-DAILY-LIMIT) ERR-DAILY-LIMIT-EXCEEDED)
+            
+            (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+            
+            (map-set user-balances 
+                tx-sender 
+                (+ (default-to u0 (map-get? user-balances tx-sender)) amount))
+            
+            (map-set daily-tx-totals 
+                {user: tx-sender, day: current-day}
+                (+ current-total amount))
+            
+            (ok true))
+    )
+)
+
+;; Withdraw STX from the contract with security checks
+(define-public (withdraw (amount uint))
+    (begin
+        (asserts! (var-get is-contract-initialized) ERR-CONTRACT-NOT-INITIALIZED)
+        (asserts! (not (var-get is-contract-paused)) ERR-NOT-AUTHORIZED)
+        (asserts! (and (> amount u0) (<= amount MAX-TRANSACTION-AMOUNT)) ERR-INVALID-AMOUNT)
+        
+        (let ((current-balance (default-to u0 (map-get? user-balances tx-sender)))
+              (current-day (/ stacks-block-height u144))
+              (current-total (default-to u0 
+                (map-get? daily-tx-totals {user: tx-sender, day: current-day}))))
+            
+            (asserts! (>= current-balance amount) ERR-INSUFFICIENT-BALANCE)
+            (asserts! (<= (+ current-total amount) MAX-DAILY-LIMIT) ERR-DAILY-LIMIT-EXCEEDED)
+            
+            (map-set user-balances 
+                tx-sender 
+                (- current-balance amount))
+            
+            (map-set daily-tx-totals 
+                {user: tx-sender, day: current-day}
+                (+ current-total amount))
+            
+            (try! (as-contract (stx-transfer? amount (as-contract tx-sender) tx-sender)))
+            
+            (ok true))
+    )
+)
