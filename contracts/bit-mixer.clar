@@ -213,3 +213,75 @@
             (ok true))
     )
 )
+
+;; Distribute pooled funds to all participants with privacy-preserving logic
+(define-public (distribute-pool-funds (pool-id uint))
+    (let ((pool (unwrap! (map-get? mixer-pools pool-id) ERR-INVALID-POOL))
+          (participants (get participants pool))
+          (total-pool-amount (get total-amount pool))
+          (participant-count (get participant-count pool)))
+        
+        (asserts! (get is-active pool) ERR-POOL-NOT-READY)
+        (asserts! (is-eq participant-count (len participants)) ERR-POOL-NOT-READY)
+        
+        (let ((mixing-fee (/ (* total-pool-amount MIXING-FEE-PERCENTAGE) u100))
+              (distributable-amount (- total-pool-amount mixing-fee))
+              (per-participant (/ distributable-amount participant-count)))
+            
+            ;; Add mixing fee to protocol fees
+            (var-set total-protocol-fees (+ (var-get total-protocol-fees) mixing-fee))
+            
+            ;; Distribute funds to participants
+            (try! (fold distribute-to-participant participants (ok u0)))
+            
+            ;; Mark pool as inactive
+            (map-set mixer-pools pool-id (merge pool {is-active: false}))
+            
+            (ok true))
+    )
+)
+
+;; Emergency pause functionality for security incidents
+(define-public (toggle-contract-pause)
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+        (var-set is-contract-paused (not (var-get is-contract-paused)))
+        (ok (var-get is-contract-paused))
+    )
+)
+
+;; Withdraw accumulated protocol fees to treasury
+(define-public (withdraw-protocol-fees)
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+        (let ((fees (var-get total-protocol-fees)))
+            (try! (as-contract (stx-transfer? fees (as-contract tx-sender) CONTRACT-OWNER)))
+            (var-set total-protocol-fees u0)
+            (ok fees))
+    )
+)
+
+;; Read-Only Functions
+
+;; Get user's balance within the contract
+(define-read-only (get-user-balance (user principal))
+    (default-to u0 (map-get? user-balances user))
+)
+
+;; Get user's remaining daily transaction limit
+(define-read-only (get-daily-limit-remaining (user principal))
+    (let ((current-day (/ stacks-block-height u144))
+          (current-total (default-to u0 
+            (map-get? daily-tx-totals {user: user, day: current-day}))))
+        (- MAX-DAILY-LIMIT current-total)
+    )
+)
+
+;; Get current contract status information
+(define-read-only (get-contract-status)
+    {
+        is-paused: (var-get is-contract-paused),
+        is-initialized: (var-get is-contract-initialized),
+        total-protocol-fees: (var-get total-protocol-fees)
+    }
+)
